@@ -17,14 +17,31 @@ class RuleTest(unittest.TestCase):
         self.assertGreater(critical["score"], low["score"])
 
     def test_restore_rejects_failed_sample(self):
-        item = {
-            "status": "sampled",
-            "payload": {"limit": 10, "sample_results": [{"concentration": 12}]},
+        from src.rules import apply_action, init_zone_progress
+        payload = init_zone_progress({
+            "limit": 10,
+            "zone_ids": ["Z-3"],
+            "sample_results": [],
+        })
+        payload["zone_progress"]["Z-3"]["flushed"] = {"at": "2026-09-27T01:00:00+00:00", "seq": 1}
+        payload["zone_progress"]["Z-3"]["disinfected"] = {"at": "2026-09-27T02:00:00+00:00", "batch_id": "B-1", "seq": 2}
+        payload["zone_progress"]["Z-3"]["sampled"] = {
+            "sample_id": "S-X", "concentration": 12, "batch_id": "B-1", "seq": 3,
         }
-        from src.rules import apply_action
+        item = {"status": "sampled", "payload": payload}
         with self.assertRaises(DomainError) as context:
-            apply_action(item, "restore", {"all_zones_cleared": True}, "c", "coordinator")
-        self.assertEqual(context.exception.code, "quality_not_met")
+            apply_action(item, "restore", {}, "c", "coordinator")
+        self.assertEqual(context.exception.code, "zones_not_cleared")
+
+    def test_restore_requires_every_zone_to_have_passing_sample(self):
+        from src.rules import restore_readiness, init_zone_progress
+        payload = init_zone_progress({"limit": 10, "zone_ids": ["Z-1", "Z-2"], "sample_results": []})
+        ready, waiting, summaries = restore_readiness(payload)
+        self.assertFalse(ready)
+        self.assertEqual(set(waiting), {"Z-1", "Z-2"})
+        for summary in summaries:
+            self.assertEqual(summary["stage"], "pending_flush")
+            self.assertEqual(summary["missing"], ["冲洗", "消毒", "采样"])
 
 
 if __name__ == "__main__":

@@ -160,11 +160,12 @@ class Repository:
         finally:
             conn.close()
 
-    def add_source(self, item_id, source_type, external_id, payload, observed_at, actor, role):
+    def add_source(self, item_id, source_type, external_id, payload, observed_at, actor, role,
+                   new_payload=None, new_status=None, invalidation=None):
         conn = self.connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            item = conn.execute("SELECT id FROM items WHERE id=?", (item_id,)).fetchone()
+            item = conn.execute("SELECT id, version FROM items WHERE id=?", (item_id,)).fetchone()
             if item is None:
                 raise NotFoundError("item_not_found", "业务实体不存在")
             try:
@@ -183,8 +184,24 @@ class Repository:
                 role,
                 {"source_id": source_id, "source_type": source_type, "external_id": external_id},
             )
+            # 再次登记污染来源导致区域恢复依据作废：更新事件状态与依据并留痕
+            if new_payload is not None:
+                version = int(item["version"]) + 1
+                conn.execute(
+                    "UPDATE items SET status=?,version=?,payload=?,updated_at=? WHERE id=?",
+                    (new_status or "sampled", version, canonical_json(new_payload), now_iso(), item_id),
+                )
+                if invalidation:
+                    self.append_audit(
+                        conn,
+                        item_id,
+                        "restoration_invalidated",
+                        actor,
+                        role,
+                        {"source_id": source_id, **invalidation},
+                    )
             conn.execute("COMMIT")
-            return {"id": source_id, "item_id": item_id, "source_type": source_type, "external_id": external_id, "payload": payload, "observed_at": observed_at}
+            return {"id": source_id, "item_id": item_id, "source_type": source_type, "external_id": external_id, "payload": payload, "observed_at": observed_at, "invalidation": invalidation}
         except Exception:
             try:
                 conn.execute("ROLLBACK")
@@ -226,6 +243,12 @@ class Repository:
                 (item_id, action, actor, role, canonical_json(event_payload), now_iso()),
             )
             self.append_audit(conn, item_id, action, actor, role, event_payload)
+            # 复检超限导致原恢复依据作废时，单独留一条作废审计
+            if isinstance(event_payload, dict) and event_payload.get("invalidation"):
+                self.append_audit(
+                    conn, item_id, "restoration_invalidated", actor, role,
+                    {"action": action, **event_payload["invalidation"]},
+                )
             conn.execute("COMMIT")
             return self.get_item(item_id)
         except Exception:

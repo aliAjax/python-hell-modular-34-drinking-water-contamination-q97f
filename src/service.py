@@ -12,6 +12,7 @@ class Service:
         if role not in rules.CREATE_ROLES:
             raise DomainError("forbidden", "当前角色不能创建此类业务记录", 403)
         normalized = domain.normalize_create(payload)
+        rules.init_zone_progress(normalized)
         stable_key = normalized.pop("_stable_key")
         return self.repository.create_item(
             rules.ENTITY_TYPE, stable_key, rules.INITIAL_STATUS, normalized, actor, role
@@ -26,14 +27,22 @@ class Service:
         normalized = domain.normalize_source(payload)
         if region and rules.ENFORCE_REGION and role != "regulator" and normalized.get("region") and normalized["region"] != region:
             raise DomainError("region_mismatch", "来源记录不属于当前管辖区域", 403)
+        # 再次登记某区域污染来源时，该区域原恢复依据作废、已恢复回到已采样
+        new_payload, new_status, invalidation = rules.apply_source(item, normalized, actor, role)
+        source_type = normalized.pop("source_type")
+        external_id = normalized.pop("external_id")
+        observed_at = normalized.pop("observed_at")
         result = self.repository.add_source(
             item_id,
-            normalized.pop("source_type"),
-            normalized.pop("external_id"),
+            source_type,
+            external_id,
             normalized,
-            normalized.pop("observed_at"),
+            observed_at,
             actor,
             role,
+            new_payload=new_payload if invalidation else None,
+            new_status=new_status if invalidation else None,
+            invalidation=invalidation,
         )
         return result
 
@@ -60,10 +69,20 @@ class Service:
         item["sources"] = self.repository.list_sources(item_id)
         item["audit"] = self.repository.audit_trail(item_id)
         item["assessment"] = rules.assess(item["payload"])
+        ready, not_ready, summaries = rules.restore_readiness(item["payload"])
+        item["zones"] = summaries
+        item["restore_ready"] = ready
+        item["zones_waiting"] = not_ready
         return item
 
     def list_items(self, status=None):
         return self.repository.list_items(status)
 
     def state(self):
-        return self.repository.state_summary()
+        summary = self.repository.state_summary()
+        for item in summary.get("items", []):
+            ready, not_ready, zone_summaries = rules.restore_readiness(item["payload"])
+            item["zones"] = zone_summaries
+            item["restore_ready"] = ready
+            item["zones_waiting"] = not_ready
+        return summary
