@@ -1,5 +1,245 @@
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>饮用水污染响应</title><body><h1>市政饮用水污染响应</h1><p>使用 JSON API 创建污染事件、登记水源或管网记录，并完成复检、通知、冲洗、消毒和恢复。</p><pre>GET /health
-GET /api/state
-POST /api/items
-POST /api/items/{id}/sources
-POST /api/items/{id}/actions</pre></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>饮用水污染响应</title>
+<style>
+  :root { --line:#d7dde5; --ink:#1f2d3d; --muted:#6b7a8d; --bg:#f4f6f9;
+          --ok:#1a7f4b; --warn:#b25f00; --bad:#b3261e; --accent:#1f5fa8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+         background:var(--bg); color:var(--ink); }
+  header { background:#10324f; color:#fff; padding:14px 20px; }
+  header h1 { margin:0; font-size:18px; }
+  header p { margin:4px 0 0; font-size:12px; color:#c3d2e2; }
+  main { max-width:1080px; margin:16px auto; padding:0 16px; }
+  .identity { background:#fff; border:1px solid var(--line); border-radius:8px;
+              padding:10px 14px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; font-size:13px; }
+  .identity select, .identity input { padding:4px 6px; }
+  .identity .hint { color:var(--muted); }
+  .card { background:#fff; border:1px solid var(--line); border-radius:8px; margin-top:14px;
+          padding:14px 16px; }
+  .card h2 { margin:0 0 8px; font-size:15px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:10px; border:1px solid var(--line);
+          color:var(--muted); background:#f7f9fb; }
+  .pill.restored { color:#fff; background:var(--ok); border-color:var(--ok); }
+  .pill.sampled { color:#fff; background:var(--accent); border-color:var(--accent); }
+  .pill.detected, .pill.verified { background:#eef2f7; }
+  .banner { margin:8px 0; padding:8px 12px; border-radius:6px; font-size:13px; }
+  .banner.bad { background:#fdecea; border:1px solid #f3c1bd; color:var(--bad); }
+  .banner.good { background:#e8f5ee; border:1px solid #bfe3cf; color:var(--ok); }
+  table.zones { width:100%; border-collapse:collapse; margin-top:6px; font-size:13px; }
+  table.zones th, table.zones td { border-bottom:1px solid var(--line); padding:7px 8px; text-align:left; }
+  table.zones th { color:var(--muted); font-weight:600; font-size:12px; }
+  .stage { font-weight:600; }
+  .stage.restored { color:var(--ok); }
+  .stage.sampled { color:var(--accent); }
+  .stage.disinfected, .stage.flushed { color:var(--warn); }
+  .stage.pending_flush { color:var(--bad); }
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip { font-size:11px; padding:2px 8px; border-radius:10px; background:#fdecea;
+          color:var(--bad); border:1px solid #f3c1bd; }
+  .chip.none { background:#e8f5ee; color:var(--ok); border-color:#bfe3cf; }
+  .actions { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr));
+             gap:10px; margin-top:12px; }
+  .action { border:1px solid var(--line); border-radius:6px; padding:8px 10px; background:#fafbfc; }
+  .action h3 { margin:0 0 6px; font-size:12px; color:var(--muted); }
+  .action input, .action select { width:100%; padding:4px 6px; margin:3px 0;
+           font-size:12px; border:1px solid var(--line); border-radius:4px; }
+  .action button { width:100%; margin-top:4px; padding:5px; font-size:12px; border:0;
+           border-radius:4px; background:var(--accent); color:#fff; cursor:pointer; }
+  .action button:disabled { background:#a9bdd0; cursor:default; }
+  .create { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:8px; }
+  .create label { font-size:11px; color:var(--muted); display:flex; flex-direction:column; gap:2px; }
+  .create input { padding:5px 6px; font-size:13px; border:1px solid var(--line); border-radius:4px; }
+  .create button { grid-column:1/-1; padding:7px; border:0; border-radius:5px;
+           background:var(--accent); color:#fff; font-size:13px; cursor:pointer; }
+  details { margin-top:10px; }
+  summary { cursor:pointer; font-size:12px; color:var(--accent); }
+  pre { font-size:11px; background:#0f2233; color:#d7e6f5; padding:10px; border-radius:6px;
+        overflow:auto; max-height:260px; }
+  #msg { font-size:12px; margin-top:8px; min-height:16px; }
+  #msg.ok { color:var(--ok); } #msg.err { color:var(--bad); }
+  .empty { color:var(--muted); font-size:13px; }
+  .meta { font-size:11px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1>市政饮用水污染响应</h1>
+  <p>复检依据按区域独立记录：待冲洗 → 已消毒（批次覆盖）→ 已采样（同批次消毒后合格）→ 已恢复。所有区域都有当前合格样本后才能恢复供水。</p>
+</header>
+<main>
+  <div class="identity">
+    <span>操作人</span><input id="user" value="operator-1" size="12">
+    <span>角色</span>
+    <select id="role">
+      <option value="field_operator">field_operator 现场</option>
+      <option value="lab">lab 实验室</option>
+      <option value="coordinator">coordinator 协调员</option>
+      <option value="dispatcher">dispatcher 调度</option>
+      <option value="analyst">analyst 分析员</option>
+      <option value="regulator">regulator 监管</option>
+    </select>
+    <label><input type="checkbox" id="auto" checked> 5 秒自动刷新</label>
+    <button onclick="load()">刷新</button>
+    <span class="hint">所有操作自动携带当前 version</span>
+  </div>
+
+  <div class="card">
+    <h2>新建污染事件</h2>
+    <div class="create">
+      <label>source_id<input id="c-source" value="SRC-1"></label>
+      <label>污染物<input id="c-contaminant" value="nitrate"></label>
+      <label>发现时间 ISO<input id="c-detected"></label>
+      <label>浓度<input id="c-conc" type="number" value="20"></label>
+      <label>限值<input id="c-limit" type="number" value="10"></label>
+      <label>区域（逗号分隔）<input id="c-zones" value="Z-1,Z-2"></label>
+      <label>受影响人数<input id="c-pop" type="number" value="5000"></label>
+      <button onclick="createItem()">登记事件</button>
+    </div>
+    <div id="msg"></div>
+  </div>
+
+  <div id="items"></div>
+</main>
+
+<script>
+const STATUS_LABEL = {
+  detected:"待核实", verified:"已核实", advisory:"已通知", flushing:"冲洗中",
+  switched:"已切换水源", disinfected:"已消毒", sampled:"已采样", restored:"已恢复", cancelled:"已取消"
+};
+const $ = id => document.getElementById(id);
+function nowIso(){ const d=new Date(); return d.toISOString().slice(0,16)+":00+00:00"; }
+$("c-detected").value = nowIso();
+
+function headers(){
+  return {"Content-Type":"application/json",
+          "X-User-Id":$("user").value.trim() || "anonymous",
+          "X-Role":$("role").value};
+}
+function esc(v){ return String(v??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+
+async function api(path, method="GET", body){
+  const res = await fetch(path, {method, headers:headers(),
+    body: body ? JSON.stringify(body) : undefined});
+  const data = await res.json().catch(()=>({}));
+  if(!res.ok) throw new Error(data.message || data.error || ("HTTP "+res.status));
+  return data;
+}
+function setMsg(text, ok){ const m=$("msg"); m.textContent=text; m.className=ok?"ok":"err"; }
+
+async function createItem(){
+  try{
+    await api("/api/items","POST",{
+      source_id:$("c-source").value, contaminant:$("c-contaminant").value,
+      detected_at:$("c-detected").value, concentration:Number($("c-conc").value),
+      limit:Number($("c-limit").value),
+      zone_ids:$("c-zones").value.split(",").map(s=>s.trim()).filter(Boolean),
+      population:Number($("c-pop").value)});
+    setMsg("事件已登记", true); load();
+  }catch(e){ setMsg(e.message); }
+}
+
+async function act(id, version, payload){
+  payload.expected_version = version;
+  try{ await api(`/api/items/${id}/actions`,"POST",payload); setMsg("操作成功",true); load(); }
+  catch(e){ setMsg(e.message); }
+}
+async function addSource(id, zoneId){
+  try{
+    await api(`/api/items/${id}/sources`,"POST",{
+      source_type:"pipe", external_id:"P-"+Date.now().toString(36).toUpperCase(),
+      observed_at:nowIso(), zone_id:zoneId || undefined});
+    setMsg("污染来源已登记；若该区域已有复检依据，原依据已作废", true); load();
+  }catch(e){ setMsg(e.message); }
+}
+
+function zoneRows(item){
+  const rows = item.zone_progress.map(z => {
+    const sample = z.qualified_sample
+      ? `${esc(z.sample_id)}（${z.concentration}）`
+      : '<span style="color:#b25f00">无当前合格样本</span>';
+    const chips = z.restored
+      ? '<span class="chip none">无</span>'
+      : z.missing_labels.map(m=>`<span class="chip">${esc(m)}</span>`).join("");
+    return `<tr>
+      <td><b>${esc(z.zone_id)}</b></td>
+      <td class="stage ${z.stage}">${esc(z.stage_label)}</td>
+      <td>${esc(z.batch_id||"—")} <span class="meta">依据#${z.basis}</span></td>
+      <td>${sample}</td>
+      <td><div class="chips">${chips}</div></td>
+    </tr>`;
+  }).join("");
+  return `<table class="zones">
+    <tr><th>区域</th><th>当前阶段</th><th>当前消毒批次</th><th>当前合格样本</th><th>还缺什么</th></tr>${rows}</table>`;
+}
+
+function actionForms(item){
+  const id=item.id, v=item.version;
+  const p=item.payload;
+  return `<div class="actions">
+    <div class="action"><h3>冲洗区域 flush</h3>
+      <input data-zone placeholder="zone_id">
+      <button onclick='act(${id},${v},{action:"flush",zone_id:this.previousElementSibling.value})'>提交冲洗</button></div>
+    <div class="action"><h3>消毒批次 disinfect（写明覆盖区域）</h3>
+      <input data-batch placeholder="batch_id" value="B-${Date.now().toString(36).toUpperCase()}">
+      <input data-zones placeholder="覆盖区域，逗号分隔">
+      <input data-time type="datetime-local" value="${new Date().toISOString().slice(0,16)}">
+      <button onclick='(b=>act(${id},${v},{action:"disinfect",completed:true,batch_id:b.dataset.batch.value,zone_ids:b.dataset.zones.value.split(",").map(s=>s.trim()).filter(Boolean),completed_at:b.dataset.time.value+":00"}))(this.closest(".action"))'>完成消毒</button></div>
+    <div class="action"><h3>复检样本 sample</h3>
+      <input data-sample placeholder="sample_id" value="S-${Date.now().toString(36).toUpperCase()}">
+      <input data-zone placeholder="zone_id">
+      <input data-batchid placeholder="batch_id（同批次）">
+      <input data-conc type="number" placeholder="浓度" value="1">
+      <input data-time type="datetime-local" value="${new Date().toISOString().slice(0,16)}">
+      <button onclick='(b=>act(${id},${v},{action:"sample",sample_id:b.dataset.sample.value,zone_id:b.dataset.zone.value,batch_id:b.dataset.batchid.value,concentration:Number(b.dataset.conc.value),sampled_at:b.dataset.time.value+":00"}))(this.closest(".action"))'>提交样本</button></div>
+    <div class="action"><h3>恢复供水 restore</h3>
+      <p class="meta">所有区域均有当前合格样本时才可执行</p>
+      <button onclick='act(${id},${v},{action:"restore"})'>恢复供水</button>
+      <h3 style="margin-top:8px">再次登记污染来源</h3>
+      <input data-srczone placeholder="zone_id（可空）">
+      <button onclick='addSource(${id},this.previousElementSibling.value)'>登记来源（作废该区域依据）</button></div>
+  </div>`;
+}
+
+function renderItems(items){
+  if(!items.length){ $("items").innerHTML='<div class="card empty">暂无污染事件</div>'; return; }
+  $("items").innerHTML = items.map(item=>{
+    const p=item.payload;
+    const missingZones = item.zone_progress.filter(z=>!z.qualified_sample && !z.restored);
+    let banner;
+    if(item.status==="restored"){
+      banner='<div class="banner good">已恢复供水。如某区域再次登记污染来源或复检超限，该区域恢复依据作废，事件回到“已采样”。</div>';
+    } else if(missingZones.length){
+      banner=`<div class="banner bad">暂不能恢复供水：${missingZones.map(z=>
+        `${esc(z.zone_id)} 缺 ${z.missing_labels.filter(m=>m!=="待整体恢复供水").map(esc).join("、")||"当前合格样本"}`).join("；")}</div>`;
+    } else {
+      banner='<div class="banner good">所有区域均有当前合格样本，可以恢复供水。</div>';
+    }
+    return `<div class="card">
+      <h2>#${item.id} ${esc(p.contaminant)} @ ${esc(p.source_id)}
+        <span class="pill ${item.status}">${esc(STATUS_LABEL[item.status]||item.status)}</span>
+        <span class="pill">v${item.version}</span>
+        <span class="pill">限值 ${p.limit}</span>
+      </h2>
+      ${banner}
+      ${zoneRows(item)}
+      ${actionForms(item)}
+      <details><summary>审计链（${item.audit?item.audit.length:0}）</summary><pre>${esc(JSON.stringify(item.audit||[],null,1))}</pre></details>
+    </div>`;
+  }).join("");
+}
+
+async function load(){
+  try{
+    const state = await api("/api/state");
+    renderItems(state.items || []);
+  }catch(e){ setMsg(e.message); }
+}
+load();
+setInterval(()=>{ if($("auto").checked) load(); }, 5000);
+</script>
+</body>
+</html>

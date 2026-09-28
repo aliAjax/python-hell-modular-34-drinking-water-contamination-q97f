@@ -26,15 +26,21 @@ class Service:
         normalized = domain.normalize_source(payload)
         if region and rules.ENFORCE_REGION and role != "regulator" and normalized.get("region") and normalized["region"] != region:
             raise DomainError("region_mismatch", "来源记录不属于当前管辖区域", 403)
+        observed_at = normalized.pop("observed_at")
+        new_status, new_payload, invalidation = rules.apply_source_registration(item, normalized, observed_at)
         result = self.repository.add_source(
             item_id,
             normalized.pop("source_type"),
             normalized.pop("external_id"),
             normalized,
-            normalized.pop("observed_at"),
+            observed_at,
             actor,
             role,
+            new_status=new_status if invalidation else None,
+            new_payload=new_payload if invalidation else None,
+            invalidation=invalidation,
         )
+        result["basis_invalidated"] = invalidation
         return result
 
     def act(self, item_id, action, payload, actor, role, expected_version=None, region=None):
@@ -60,10 +66,17 @@ class Service:
         item["sources"] = self.repository.list_sources(item_id)
         item["audit"] = self.repository.audit_trail(item_id)
         item["assessment"] = rules.assess(item["payload"])
+        item["zone_progress"] = rules.zone_progress(item["payload"])
         return item
 
     def list_items(self, status=None):
-        return self.repository.list_items(status)
+        items = self.repository.list_items(status)
+        for item in items:
+            item["zone_progress"] = rules.zone_progress(item["payload"])
+        return items
 
     def state(self):
-        return self.repository.state_summary()
+        summary = self.repository.state_summary()
+        for item in summary["items"]:
+            item["zone_progress"] = rules.zone_progress(item["payload"])
+        return summary

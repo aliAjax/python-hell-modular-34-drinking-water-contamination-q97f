@@ -48,6 +48,8 @@ def parse_timestamp(payload, name):
 
 
 def normalize_create(payload):
+    from .rules import initial_zones
+
     source_id = require_text(payload, "source_id")
     contaminant = require_text(payload, "contaminant")
     detected_at = parse_timestamp(payload, "detected_at")
@@ -61,6 +63,7 @@ def normalize_create(payload):
     population = int(payload.get("population", 0) or 0)
     if population < 0:
         raise DomainError("invalid_population", "受影响人数不能为负数")
+    zone_ids = [zone.strip() for zone in zones]
     stable_key = "%s|%s|%s" % (source_id, contaminant, detected_at)
     return {
         "source_id": source_id,
@@ -68,12 +71,15 @@ def normalize_create(payload):
         "detected_at": detected_at,
         "concentration": concentration,
         "limit": limit,
-        "zone_ids": [zone.strip() for zone in zones],
+        "zone_ids": zone_ids,
+        "zones": initial_zones(zone_ids),
         "population": population,
         "complaints": int(payload.get("complaints", 0) or 0),
         "notifications": [],
         "response_actions": [],
+        "disinfection_batches": [],
         "sample_results": [],
+        "basis_invalidations": [],
         "_stable_key": stable_key,
     }
 

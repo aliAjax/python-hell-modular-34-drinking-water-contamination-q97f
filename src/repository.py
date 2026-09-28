@@ -160,12 +160,13 @@ class Repository:
         finally:
             conn.close()
 
-    def add_source(self, item_id, source_type, external_id, payload, observed_at, actor, role):
+    def add_source(self, item_id, source_type, external_id, payload, observed_at, actor, role,
+                   new_status=None, new_payload=None, invalidation=None):
         conn = self.connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            item = conn.execute("SELECT id FROM items WHERE id=?", (item_id,)).fetchone()
-            if item is None:
+            row = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+            if row is None:
                 raise NotFoundError("item_not_found", "业务实体不存在")
             try:
                 conn.execute(
@@ -175,14 +176,16 @@ class Repository:
             except sqlite3.IntegrityError:
                 raise ConflictError("duplicate_source", "同一来源记录已经提交")
             source_id = conn.execute("SELECT last_insert_rowid() AS id").fetchone()["id"]
-            self.append_audit(
-                conn,
-                item_id,
-                "source_recorded",
-                actor,
-                role,
-                {"source_id": source_id, "source_type": source_type, "external_id": external_id},
-            )
+            event_payload = {"source_id": source_id, "source_type": source_type, "external_id": external_id}
+            if invalidation:
+                event_payload["basis_invalidated"] = invalidation
+            if new_status is not None and new_payload is not None:
+                version = int(row["version"]) + 1
+                conn.execute(
+                    "UPDATE items SET status=?,version=?,payload=?,updated_at=? WHERE id=?",
+                    (new_status, version, canonical_json(new_payload), now_iso(), item_id),
+                )
+            self.append_audit(conn, item_id, "source_recorded", actor, role, event_payload)
             conn.execute("COMMIT")
             return {"id": source_id, "item_id": item_id, "source_type": source_type, "external_id": external_id, "payload": payload, "observed_at": observed_at}
         except Exception:
